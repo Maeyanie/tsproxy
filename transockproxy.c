@@ -33,8 +33,8 @@
 /* This must be at least enough to hold HTTP headers. */
 #define BUFFERSIZE 8192
 
-static volatile int exitflag = 0;
-static volatile int running = 0;
+static volatile sig_atomic_t exitflag = 0;
+static volatile sig_atomic_t running = 0;
 static struct sockaddr_in saddr;
 
 static const unsigned char socks4a[] = {
@@ -49,6 +49,14 @@ void* connthread(void* arg);
 int writeall(int fd, char* buffer, int size);
 void sighandle(int sig);
 
+#ifdef DAEMON
+#define log(a...)
+#define warn(a...)
+#else
+#define log(a...) printf(a)
+#define warn(a...) fprintf(stderr, a)
+#endif
+
 int main(int argc, char* argv[]) {
 	int rc;
 	struct hostent* hostinfo;
@@ -58,7 +66,7 @@ int main(int argc, char* argv[]) {
 	int lport, sport;
 	int lsock, csock;
 	pthread_t tid;
-	pthread_attr_t tattr;
+	/*pthread_attr_t tattr;*/
 
 	if (argc != 4) {
 		printf("Usage: %s <listen port> <socks server> <socks port>\n", argv[0]);
@@ -91,9 +99,14 @@ int main(int argc, char* argv[]) {
 	
 	listen(lsock, 32);
 	
-	pthread_attr_init(&tattr);
-	/* For some reason I'm getting undefined reference on this?
+	/* pthread_attr_init(&tattr);
+	For some reason I'm getting undefined reference on this?
 	pthread_attr_setdetatchstate(&tattr, PTHREAD_CREATE_DETACHED);*/
+	
+	printf("Ready.\n");
+	#ifdef DAEMON
+	daemon(0, 0);
+	#endif
 
 	while (exitflag == 0) {	
 		caddrsize = sizeof(caddr);
@@ -101,18 +114,18 @@ int main(int argc, char* argv[]) {
 		csock = accept(lsock, (struct sockaddr*)&caddr, &caddrsize);
 		if (csock <= 0) break;
 		
-		printf("[%d] New connection from %s:%hu\n", 
+		log("[%d] New connection from %s:%hu\n", 
 			csock, inet_ntoa(caddr.sin_addr), ntohs(caddr.sin_port));
 		
-		pthread_create(&tid, &tattr, connthread, (void*)csock);
+		pthread_create(&tid, NULL, connthread, (void*)csock);
 		pthread_detach(tid);
 	}
 	
 	close(lsock);
 	
-	printf("Waiting for all threads to exit.\n");
+	log("Waiting for all threads to exit.\n");
 	while (running > 0) {
-		printf("Waiting... %d thread%s left.\n", running, running == 1 ? "" : "s");
+		log("Waiting... %d thread%s left.\n", running, running == 1 ? "" : "s");
 		sleep(1);
 	}
 	
@@ -136,11 +149,11 @@ void* connthread(void* arg) {
 	/* Find connection info from client. This *should* all fit in the first packet. */
 	rc = recv(csock, buffer, BUFFERSIZE, MSG_PEEK);
 	if (rc == 0) {
-		fprintf(stderr, "[%d] Client closed connection before sending headers.\n", csock);
+		warn("[%d] Client closed connection before sending headers.\n", csock);
 		goto end;
 	}
 	if (rc < 0) {
-		fprintf(stderr, "[%d] Error reading request headers: %m\n", csock);
+		warn("[%d] Error reading request headers: %m\n", csock);
 		goto end;
 	}
 
@@ -149,11 +162,12 @@ void* connthread(void* arg) {
 	do {
 		if (!strncasecmp(tok, "Host: ", 6)) {
 			host = strdup(tok + 6);
+			break;
 		}
 	} while ((tok = strtok(NULL, "\r\n")));
 	
 	if (host == NULL) {
-		fprintf(stderr, "[%d] Client did not provide Host: header.\n", csock);
+		warn("[%d] Client did not provide Host: header.\n", csock);
 		goto end;
 	}
 
@@ -162,18 +176,18 @@ void* connthread(void* arg) {
 	ssock = socket(AF_INET, SOCK_STREAM, 0);
 	rc = connect(ssock, (struct sockaddr*)&saddr, sizeof(saddr));
 	if (rc < 0) {
-		fprintf(stderr, "[%d] Could not connect to server: %m\n", csock);
+		warn("[%d] Could not connect to server: %m\n", csock);
 		goto end;
 	}
 	
-	printf("[%d] Establishing proxy connection to %s.\n", csock, host);
+	log("[%d] Establishing proxy connection to %s.\n", csock, host);
 	memcpy(buffer, socks4a, sizeof(socks4a));
 	strcpy(buffer + sizeof(socks4a), host);
 	write(ssock, buffer, sizeof(socks4a) + strlen(host) + 1);
 	
 	read(ssock, buffer, 8);
 	if (buffer[1] != 0x5a) {
-		fprintf(stderr, "[%d] SOCKS proxy rejected request.\n", csock);
+		warn("[%d] SOCKS proxy rejected request.\n", csock);
 		goto end;
 	}
 	
@@ -192,13 +206,13 @@ void* connthread(void* arg) {
 			rc = read(csock, buffer, BUFFERSIZE);
 			if (rc == 0) break;
 			if (rc < 0) {
-				fprintf(stderr, "[%d] Error reading from client: %m\n", csock);
+				warn("[%d] Error reading from client: %m\n", csock);
 				break;
 			}
 		
 			rc = writeall(ssock, buffer, rc);
 			if (rc <= 0) {
-				fprintf(stderr, "[%d] Error sending to server: %m\n", csock);
+				warn("[%d] Error sending to server: %m\n", csock);
 				break;
 			}
 		}
@@ -206,13 +220,13 @@ void* connthread(void* arg) {
 			rc = read(ssock, buffer, BUFFERSIZE);
 			if (rc == 0) break;
 			if (rc <= 0) {
-				fprintf(stderr, "[%d] Error reading from server: %m\n", csock);
+				warn("[%d] Error reading from server: %m\n", csock);
 				break;
 			}
 		
 			rc = writeall(csock, buffer, rc);
 			if (rc <= 0) {
-				fprintf(stderr, "[%d] Error sending to client: %m\n", csock);
+				warn("[%d] Error sending to client: %m\n", csock);
 				break;
 			}
 		}
@@ -224,7 +238,7 @@ void* connthread(void* arg) {
 	if (host) free(host);
 	if (buffer) free(buffer);
 	running--;
-	printf("[%d] Relay finished.\n", csock);
+	log("[%d] Relay finished.\n", csock);
 	return NULL;
 }
 
