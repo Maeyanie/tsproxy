@@ -20,6 +20,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <limits.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -66,7 +67,7 @@ int main(int argc, char* argv[]) {
 	int lport, sport;
 	int lsock, csock;
 	pthread_t tid;
-	/*pthread_attr_t tattr;*/
+	pthread_attr_t tattr;
 
 	if (argc != 4) {
 		printf("Usage: %s <listen port> <socks server> <socks port>\n", argv[0]);
@@ -99,9 +100,11 @@ int main(int argc, char* argv[]) {
 	
 	listen(lsock, 32);
 	
-	/* pthread_attr_init(&tattr);
-	For some reason I'm getting undefined reference on this?
+	pthread_attr_init(&tattr);
+	/*For some reason I'm getting undefined reference on this?
 	pthread_attr_setdetatchstate(&tattr, PTHREAD_CREATE_DETACHED);*/
+	rc = pthread_attr_setstacksize(&tattr, PTHREAD_STACK_MIN);
+	if (rc) fprintf(stderr, "Could not set thread stacksize, using default.\n");
 	
 	printf("Ready.\n");
 	#ifdef DAEMON
