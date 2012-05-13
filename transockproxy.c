@@ -75,6 +75,8 @@ int main(int argc, char* argv[]) {
 		return 1;
 	}
 	
+	siginterrupt(SIGINT, 1);
+	siginterrupt(SIGTERM, 1);
 	signal(SIGINT, sighandle);
 	signal(SIGTERM, sighandle);
 	
