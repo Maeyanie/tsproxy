@@ -97,6 +97,9 @@ int main(int argc, char* argv[]) {
 	lsock = socket(AF_INET, SOCK_STREAM, 0);
 	if (!lsock) { perror("Could not open listen socket"); return 2; }
 	
+	rc = 1;
+	setsockopt(lsock, SOL_SOCKET, SO_REUSEADDR, &rc, sizeof(int));
+	
 	rc = bind(lsock, (struct sockaddr*)&laddr, sizeof(saddr));
 	if (rc) { perror("Could not bind to port"); return 2; }
 	
