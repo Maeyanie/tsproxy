@@ -116,7 +116,7 @@ int main(int argc, char* argv[]) {
 	daemon(0, 0);
 	#endif
 
-	while (exitflag == 0) {	
+	while (exitflag == 0) {
 		caddrsize = sizeof(caddr);
 		
 		csock = accept(lsock, (struct sockaddr*)&caddr, &caddrsize);
@@ -132,7 +132,7 @@ int main(int argc, char* argv[]) {
 	close(lsock);
 	
 	log("Waiting for all threads to exit.\n");
-	while (running > 0) {
+	while (running > 0 && exitflag == 1) {
 		log("Waiting... %d thread%s left.\n", running, running == 1 ? "" : "s");
 		sleep(1);
 	}
@@ -252,7 +252,7 @@ void* connthread(void* arg) {
 
 
 void sighandle(int sig) {
-	exitflag = 1;
+	exitflag++;
 }
 
 
