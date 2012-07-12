@@ -40,7 +40,7 @@ static struct sockaddr_in saddr;
 
 static const unsigned char socks4a[] = {
 	0x04, 0x01,
-	0x00, 0x50, /* Hardcoded at port 80. Should really check for port in Host: header. */
+	0x00, 0x50, /* Replace this with port if it's not 80. */
 	0x00, 0x00, 0x00, 0x01,
 	0x00
 	};
@@ -148,6 +148,8 @@ void* connthread(void* arg) {
 	int rc;
 	char* tok;
 	char* host = NULL;
+	char* portstr;
+	short port;
 	fd_set fds;
 	fd_set rfds;
 	
@@ -167,17 +169,19 @@ void* connthread(void* arg) {
 
 	buffer[rc] = 0;
 	tok = strtok(buffer, "\r\n");
-	do {
+	/* First token should be "GET /foo HTTP/1.1" so we can skip that safely. */
+	while ((tok = strtok(NULL, "\r\n"))) {
 		if (!strncasecmp(tok, "Host: ", 6)) {
 			host = strdup(tok + 6);
 			break;
 		}
-	} while ((tok = strtok(NULL, "\r\n")));
+	}
 	
 	if (host == NULL) {
 		warn("[%d] Client did not provide Host: header.\n", csock);
 		goto end;
 	}
+
 
 
 	/* Establish SOCKS connection. */
@@ -190,6 +194,14 @@ void* connthread(void* arg) {
 	
 	log("[%d] Establishing proxy connection to %s.\n", csock, host);
 	memcpy(buffer, socks4a, sizeof(socks4a));
+	
+	host = strtok(host, ":");
+	portstr = strtok(NULL, "\r\n");
+	if (portstr != NULL) {
+		port = htons(atoi(portstr));
+		memcpy(buffer + 2, &port, 2);
+	}
+	
 	strcpy(buffer + sizeof(socks4a), host);
 	write(ssock, buffer, sizeof(socks4a) + strlen(host) + 1);
 	
