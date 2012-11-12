@@ -19,8 +19,9 @@ You may find many other uses. :)
 - Compile with "make"
 - Edit the config file (sample is provided)
 - Run the version you want. The "s" suffix supports SSL, the "d" suffix daemonizes.
-- Redirect packets with iptables: iptables -t nat -A PREROUTING -p tcp --dport 80 -j REDIRECT --to 8888
+- Redirect packets with something like: iptables -t nat -A PREROUTING -i eth0 -p tcp --dport 80 -j REDIRECT --to 8888
 - You can redirect packets from the OUTPUT chain too, but be careful not to cause an infinite loop
+- While running, a SIGINT (Ctrl-C) or SIGTERM (kill) once will start a clean shutdown. A second will exit immediately
 
 ### HTTPS ###
 HTTPS is supported, but is a bit ugly. The protocol is designed to defeat man-in-the-middle attacks,
