@@ -1,7 +1,10 @@
-all: transockproxy transockproxyd
+all: transockproxy transockproxys transockproxyd
 
 transockproxy: transockproxy.c
-	$(CC) -m32 -O2 -Wall -Werror -o transockproxy transockproxy.c -lpthread
+	$(CC) -m32 -g -Wall -Werror -o $@ $< -lpthread
+
+transockproxys: transockproxy.c gnutls.c
+	$(CC) -g -Wall -Werror -DGNUTLS -o $@ $< gnutls.c -lpthread -lgnutls
 
 transockproxyd: transockproxy.c
-	$(CC) -m32 -O2 -Wall -Werror -DDAEMON -o transockproxyd transockproxy.c -lpthread
+	$(CC) -m32 -g -Wall -Werror -DDAEMON -o $@ $< -lpthread

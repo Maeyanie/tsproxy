@@ -17,26 +17,14 @@
  *  gcc -O2 -o transockproxy transockproxy.c -lpthread
  */
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <unistd.h>
-#include <limits.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
-#include <netdb.h>
-#include <sys/types.h>
-#include <string.h>
-#include <strings.h>
-#include <pthread.h>
-#include <signal.h>
+#include "transockproxy.h"
 
-/* This must be at least enough to hold HTTP headers. */
-#define BUFFERSIZE 8192
-
-static volatile sig_atomic_t exitflag = 0;
-static volatile sig_atomic_t running = 0;
-static struct sockaddr_in saddr;
+volatile sig_atomic_t exitflag = 0;
+volatile sig_atomic_t running = 0;
+enum Proto defproto;
+struct sockaddr_in defaddr;
+struct Mapping** mappings;
+int mappingcount;
 
 static const unsigned char socks4a[] = {
 	0x04, 0x01,
@@ -45,65 +33,68 @@ static const unsigned char socks4a[] = {
 	0x00
 	};
 
-
-void* connthread(void* arg);
-int writeall(int fd, char* buffer, int size);
-void sighandle(int sig);
-
-#ifdef DAEMON
-#define log(a...)
-#define warn(a...)
-#else
-#define log(a...) printf(a)
-#define warn(a...) fprintf(stderr, a)
-#endif
+static const unsigned char socks5a[] = {
+	0x05, 0x01, 0x00
+	};
+static const unsigned char socks5b[] = {
+	0x05, 0x01, 
+	0x00, 0x03
+	};
 
 int main(int argc, char* argv[]) {
 	int rc;
-	struct hostent* hostinfo;
 	struct sockaddr_in laddr;
+	struct sockaddr_in ssladdr;
 	struct sockaddr_in caddr;
 	unsigned int caddrsize;
-	int lport, sport;
-	int lsock, csock;
+	int lsock = 0, csock, sslsock = 0;
 	pthread_t tid;
 	pthread_attr_t tattr;
+	fd_set fds;
+	fd_set rfds;
+	
+	#ifdef GNUTLS
+	gnutlsinit();
+	#endif
 
-	if (argc != 4) {
-		printf("Usage: %s <listen port> <socks server> <socks port>\n", argv[0]);
-		printf("Example: %s 80 10.0.0.1 1080\n", argv[0]);
-		return 1;
-	}
+	readconfig(&laddr, &ssladdr);
+	
+	#ifdef GNUTLS
+	gnutlspostinit();
+	#endif
 	
 	siginterrupt(SIGINT, 1);
 	siginterrupt(SIGTERM, 1);
 	signal(SIGINT, sighandle);
 	signal(SIGTERM, sighandle);
 	
-	lport = atoi(argv[1]);
-	sport = atoi(argv[3]);
+	if (laddr.sin_port) {
+		lsock = socket(AF_INET, SOCK_STREAM, 0);
+		if (!lsock) { perror("Could not open listen socket"); return 2; }
 	
-	laddr.sin_family = AF_INET;
-	laddr.sin_addr.s_addr = htonl(INADDR_ANY);
-	laddr.sin_port = htons(lport);
+		rc = 1;
+		setsockopt(lsock, SOL_SOCKET, SO_REUSEADDR, &rc, sizeof(int));
 	
-	hostinfo = gethostbyname(argv[2]);
-	if (!hostinfo) { fprintf(stderr, "Unknown host %s\n", argv[2]); return 2; }
+		rc = bind(lsock, (struct sockaddr*)&laddr, sizeof(laddr));
+		if (rc) { perror("Could not bind to port"); return 2; }
 	
-	saddr.sin_family = AF_INET;
-	saddr.sin_addr = *(struct in_addr*)hostinfo->h_addr;
-	saddr.sin_port = htons(sport);
+		listen(lsock, 32);
+	}
 	
-	lsock = socket(AF_INET, SOCK_STREAM, 0);
-	if (!lsock) { perror("Could not open listen socket"); return 2; }
+	#if defined(GNUTLS) || defined(OPENSSL)
+	if (ssladdr.sin_port) {
+		sslsock = socket(AF_INET, SOCK_STREAM, 0);
+		if (!sslsock) { perror("Could not open SSL socket"); return 2; }
 	
-	rc = 1;
-	setsockopt(lsock, SOL_SOCKET, SO_REUSEADDR, &rc, sizeof(int));
+		rc = 1;
+		setsockopt(sslsock, SOL_SOCKET, SO_REUSEADDR, &rc, sizeof(int));
 	
-	rc = bind(lsock, (struct sockaddr*)&laddr, sizeof(saddr));
-	if (rc) { perror("Could not bind to port"); return 2; }
+		rc = bind(sslsock, (struct sockaddr*)&ssladdr, sizeof(ssladdr));
+		if (rc) { perror("Could not bind to SSL port"); return 2; }
 	
-	listen(lsock, 32);
+		listen(sslsock, 32);
+	}
+	#endif
 	
 	pthread_attr_init(&tattr);
 	/*For some reason I'm getting undefined reference on this?
@@ -116,20 +107,49 @@ int main(int argc, char* argv[]) {
 	daemon(0, 0);
 	#endif
 
+	FD_ZERO(&fds);
+	if (lsock) FD_SET(lsock, &fds);
+	if (sslsock) FD_SET(sslsock, &fds);
+
 	while (exitflag == 0) {
 		caddrsize = sizeof(caddr);
 		
-		csock = accept(lsock, (struct sockaddr*)&caddr, &caddrsize);
-		if (csock <= 0) break;
+		rfds = fds;
+		rc = select(FD_SETSIZE, &rfds, NULL, NULL, NULL);
+		if (rc < 0) { log("select() returned %d: %m\n", rc); break; }
 		
-		log("[%d] New connection from %s:%hu\n", 
-			csock, inet_ntoa(caddr.sin_addr), ntohs(caddr.sin_port));
+		if (FD_ISSET(lsock, &rfds)) {
+			csock = accept(lsock, (struct sockaddr*)&caddr, &caddrsize);
+			if (csock <= 0) {
+				log("accept() returned %d: %m\n", csock);
+				break;
+			}
 		
-		pthread_create(&tid, NULL, connthread, (void*)csock);
-		pthread_detach(tid);
+			log("[%d] New connection from %s:%hu\n", 
+				csock, inet_ntoa(caddr.sin_addr), ntohs(caddr.sin_port));
+		
+			pthread_create(&tid, NULL, connthread, (void*)(long)csock);
+			pthread_detach(tid);
+		}
+		#ifdef GNUTLS
+		if (FD_ISSET(sslsock, &rfds)) {
+			csock = accept(sslsock, (struct sockaddr*)&caddr, &caddrsize);
+			if (csock <= 0) {
+				log("accept() returned %d: %m\n", csock);
+				break;
+			}
+		
+			log("[%d] New SSL connection from %s:%hu\n", 
+				csock, inet_ntoa(caddr.sin_addr), ntohs(caddr.sin_port));
+		
+			pthread_create(&tid, NULL, gnutlsthread, (void*)(long)csock);
+			pthread_detach(tid);		
+		}
+		#endif
 	}
 	
-	close(lsock);
+	if (lsock) close(lsock);
+	if (sslsock) close(sslsock);
 	
 	log("Waiting for all threads to exit.\n");
 	while (running > 0 && exitflag == 1) {
@@ -137,19 +157,345 @@ int main(int argc, char* argv[]) {
 		sleep(1);
 	}
 	
+	#ifdef GNUTLS
+	gnutls_global_deinit();
+	#endif
+	
+	log("Exiting.\n");
 	return 0;
 }
 
 
+void readconfig(struct sockaddr_in* laddr, struct sockaddr_in* ssladdr) {
+	struct hostent* hostinfo;
+	char* proto;
+	char* host;
+	int port;
+	char* line = NULL;
+	size_t linelen = 0;
+	char* tok;
+	struct Mapping* map;
+	
+	laddr->sin_family = AF_INET;
+	laddr->sin_addr.s_addr = htonl(INADDR_ANY);
+	laddr->sin_port = 0;
+	
+	ssladdr->sin_family = AF_INET;
+	ssladdr->sin_addr.s_addr = htonl(INADDR_ANY);
+	ssladdr->sin_port = 0;
+
+	defaddr.sin_family = AF_INET;
+	defaddr.sin_port = 0;
+	
+	FILE* fp = fopen("transockproxy.conf", "r");
+	if (!fp) { fprintf(stderr, "Error opening transockproxy.conf: %m\n"); exit(1); }	
+
+	while (getline(&line, &linelen, fp) > 0) {
+		if (line[0] == '#' || line[0] == '\r' || line[0] == '\n') continue;
+		tok = strtok(line, " ");
+		
+		if (!strcmp(tok, "listen")) {
+			tok = strtok(NULL, "\r\n");
+			port = atoi(tok);
+			laddr->sin_port = htons(port);
+			printf("Listening on port %d.\n", port);
+		} else if (!strcmp(tok, "default")) {
+			proto = strtok(NULL, ":\r\n");
+			host = strtok(NULL, ":")+2;
+			tok = strtok(NULL, "\r\n");
+			port = tok ? atoi(tok) : 0;
+			
+			if (!strcmp(proto, "direct")) {
+				defproto = DIRECT;
+				defaddr.sin_port = -1;
+				printf("Default server: direct\n");
+				continue;
+			} else if (!strcmp(proto, "socks4")) {
+				defproto = SOCKS4;
+			} else if (!strcmp(proto, "socks4a")) {
+				defproto = SOCKS4A;
+			} else if (!strcmp(proto, "socks5")) {
+				defproto = SOCKS5;
+			} else {
+				fprintf(stderr, "Unrecognized protocol '%s' (must be direct, socks4, socks4a, or socks5)\n", proto);
+				exit(1);
+			}
+			
+			hostinfo = gethostbyname(host);
+			if (!hostinfo) { fprintf(stderr, "Unknown host %s\n", host); exit(1); }
+
+			defaddr.sin_addr = *(struct in_addr*)hostinfo->h_addr;
+			defaddr.sin_port = htons(port);
+
+			printf("Default server: %s://%s:%hu\n", proto, host, port);
+		} else if (!strcmp(tok, "map")) {
+			map = (struct Mapping*)malloc(sizeof(struct Mapping));
+			map->pattern = strdup(strtok(NULL, " "));
+			
+			proto = strtok(NULL, ":\r\n");
+			if (!strcmp(proto, "direct")) {
+				map->proto = DIRECT;
+				continue;
+			} else if (!strcmp(proto, "socks4")) {
+				map->proto = SOCKS4;
+			} else if (!strcmp(proto, "socks4a")) {
+				map->proto = SOCKS4A;
+			} else if (!strcmp(proto, "socks5")) {
+				map->proto = SOCKS5;
+			} else {
+				fprintf(stderr, "Unrecognized protocol '%s' (must be direct, socks4, socks4a, or socks5)\n", proto);
+				exit(1);
+			}
+
+			host = strtok(NULL, ":")+2;
+			hostinfo = gethostbyname(host);
+			if (!hostinfo) { fprintf(stderr, "Unknown host %s\n", host); exit(1); }
+			
+			tok = strtok(NULL, "\r\n");
+			port = atoi(tok);
+			
+			map->proxy.sin_family = AF_INET;
+			map->proxy.sin_addr = *(struct in_addr*)hostinfo->h_addr;
+			map->proxy.sin_port = htons(port);
+			
+			mappings = (struct Mapping**)realloc(mappings, (mappingcount+1) * sizeof(struct Mapping*));
+			mappings[mappingcount] = map;
+			mappingcount++;
+
+			printf("Mapping pattern %s to %s://%s:%hu\n", map->pattern, proto, host, port);
+		}
+		#if defined(GNUTLS) || defined(OPENSSL)
+		else if (!strcmp(tok, "ssl")) {
+			tok = strtok(NULL, "\r\n");
+			port = atoi(tok);
+			ssladdr->sin_port = htons(port);
+			printf("Listening on SSL port %d.\n", port);
+		} else if (!strcmp(tok, "sslcert")) {
+			tok = strtok(NULL, "\r\n");
+			certfile = strdup(tok);
+		} else if (!strcmp(tok, "sslkey")) {
+			tok = strtok(NULL, "\r\n");
+			keyfile = strdup(tok);
+		}
+		#endif
+	}
+	
+	fclose(fp);
+	
+	#ifdef GNUTLS
+	if (ssladdr->sin_port) {
+		if (certfile == NULL || keyfile == NULL) {
+			fprintf(stderr, "Error loading config: SSL requested but missing sslcert and/or sslkey entries.\n");
+			exit(1);
+		}
+		/*if (gnutls_certificate_set_x509_key_file(cred, certfile, keyfile, GNUTLS_X509_FMT_PEM) < 0) {
+			fprintf(stderr, "Error loading SSL cert or key file.\n");
+			exit(1);
+		}*/
+	}
+	#endif
+	
+	if (laddr->sin_port == 0 && ssladdr->sin_port == 0) {
+		fprintf(stderr, "Error loading config: Not listening on any ports. Needs a 'listen' and/or 'ssl' line.\n");
+		exit(1);
+	}
+	if (defaddr.sin_port == 0) {
+		fprintf(stderr, "Error loading config: No 'default' line found.\n");
+		exit(1);
+	}
+}
+
+
+void findserver(enum Proto* proto, struct sockaddr_in* addr, const char* host) {
+	int x;
+	for (x = 0; x < mappingcount; x++) {
+		if (!fnmatch(mappings[x]->pattern, host, 0)) {
+			*proto = mappings[x]->proto;
+			if (mappings[x]->proto != DIRECT)
+				memcpy(addr, &(mappings[x]->proxy), sizeof(struct sockaddr_in));
+			return;
+		}
+	}
+	*proto = defproto;
+	memcpy(addr, &defaddr, sizeof(struct sockaddr_in));
+}
+
+int directconnect(int csock, int ssock, char* host, unsigned short defport) {
+	struct sockaddr_in addr;
+	struct hostent* hostinfo;
+	char* portstr;
+	int rc;
+
+	log("[%d] Establishing direct connection to %s.\n", csock, host);
+	
+	addr.sin_family = AF_INET;
+
+	host = strtok(host, ":");
+	hostinfo = gethostbyname(host);
+	if (hostinfo == NULL) {
+		warn("[%d] Could not resolve host %s.\n", csock, host);
+		return 0;
+	}
+	addr.sin_addr = *(struct in_addr*)hostinfo->h_addr;
+	
+	portstr = strtok(NULL, "\r\n");
+	if (portstr != NULL) {
+		addr.sin_port = htons(atoi(portstr));
+	} else {
+		addr.sin_port = htons(defport);
+	}
+	
+	rc = connect(ssock, (struct sockaddr*)&addr, sizeof(addr));
+	if (rc) { warn("[%d] Could not connect to server: %m\n", csock); return 0; }
+	
+	return 1;
+}
+
+int socks4connect(int csock, int ssock, char* host, unsigned short defport) {
+	char buffer[1024];
+	struct hostent* hostinfo;
+	char* portstr;
+	short port;
+
+	log("[%d] Establishing SOCKS4 proxy connection to %s.\n", csock, host);
+	memcpy(buffer, socks4a, sizeof(socks4a));
+
+	host = strtok(host, ":");
+	hostinfo = gethostbyname(host);
+	if (hostinfo == NULL) {
+		warn("[%d] Could not resolve host %s.\n", csock, host);
+		return 0;
+	}
+	memcpy(buffer + 4, hostinfo->h_addr, 4);
+	
+	portstr = strtok(NULL, "\r\n");
+	if (portstr != NULL) {
+		port = htons(atoi(portstr));
+	} else {
+		port = htons(defport);
+	}
+	memcpy(buffer + 2, &port, 2);
+
+	write(ssock, buffer, sizeof(socks4a));
+
+	read(ssock, buffer, 8);
+	if (buffer[1] != 0x5a) {
+		warn("[%d] SOCKS proxy rejected request.\n", csock);
+		return 0;
+	}
+	return 1;
+}
+
+int socks4aconnect(int csock, int ssock, char* host, unsigned short defport) {
+	char buffer[1024];
+	char* portstr;
+	short port;
+
+	log("[%d] Establishing SOCKS4a proxy connection to %s.\n", csock, host);
+	memcpy(buffer, socks4a, sizeof(socks4a));
+
+	host = strtok(host, ":");
+	portstr = strtok(NULL, "\r\n");
+	if (portstr != NULL) {
+		port = htons(atoi(portstr));
+	} else {
+		port = htons(defport);
+	}
+	memcpy(buffer + 2, &port, 2);
+
+	strcpy(buffer + sizeof(socks4a), host);
+	write(ssock, buffer, sizeof(socks4a) + strlen(host) + 1);
+
+	read(ssock, buffer, 8);
+	if (buffer[1] != 0x5a) {
+		warn("[%d] SOCKS proxy rejected request.\n", csock);
+		return 0;
+	}
+	return 1;
+}
+
+int socks5connect(int csock, int ssock, char* host, unsigned short defport) {
+	char buffer[1024];
+	char* portstr;
+	short port;
+	int rc;
+	int pos;
+	/*int x;*/
+
+	log("[%d] Establishing SOCKS5 proxy connection to %s.\n", csock, host);
+	
+	write(ssock, socks5a, sizeof(socks5a));
+	rc = read(ssock, buffer, 2);
+	
+	if (rc != 2 || buffer[0] != 0x05 || buffer[1] == 0xFF) {
+		warn("[%d] SOCKS5 proxy requires authentication, this is unsupported.\n", csock);
+		return 0;
+	}
+
+	memcpy(buffer, socks5b, sizeof(socks5b));
+
+	host = strtok(host, ":");
+	buffer[sizeof(socks5b)] = (unsigned char)strlen(host);
+	memcpy(buffer + sizeof(socks5b) + 1, host, strlen(host));
+
+	portstr = strtok(NULL, "\r\n");
+	if (portstr != NULL) {
+		port = htons(atoi(portstr));
+	} else {
+		port = htons(defport);
+	}
+	memcpy(buffer + sizeof(socks5b) + 1 + strlen(host), &port, 2);
+	
+	write(ssock, buffer, sizeof(socks5b) + strlen(host) + 3);
+	rc = read(ssock, buffer, 4);
+	pos = rc;
+	if (rc != 4 || buffer[1] != 0) {
+		warn("[%d] SOCKS5 proxy rejected request, code %hhu.\n", csock, buffer[1]);
+	}
+	switch (buffer[3]) {
+	case 1: // IPv4 address
+		rc = read(ssock, buffer + 4, 6);
+		pos += rc;
+		if (rc != 6) { warn("[%d] Expected 6 bytes, got %d, during handshake.\n", csock, rc); return 0; }
+		break;
+	case 3: // Domain name
+		rc = read(ssock, buffer + 4, 1);
+		pos += rc;
+		if (rc != 1) { warn("[%d] Expected 1 byte, got %d, during handshake.\n", csock, rc); return 0; }
+
+		rc = read(ssock, buffer + 5, buffer[4]+2);
+		pos += rc;
+		if (rc != 6) { warn("[%d] Expected %d bytes, got %d, during handshake.\n", csock, buffer[4]+2, rc); return 0; }
+		break;
+	case 4: // IPv6 address
+		rc = read(ssock, buffer + 4, 18);
+		pos += rc;
+		if (rc != 6) { warn("[%d] Expected 18 bytes, got %d, during handshake.\n", csock, rc); return 0; }
+		break;
+	default:
+		warn("[%d] SOCKS5 response address is unexpected type %hhu.\n", csock, buffer[3]);
+		return 0;
+	}
+	
+	/*log("[%d] socks5:", csock);
+	for (x = 0; x < pos; x++) {
+		log(" %hhx", buffer[x]);
+	}
+	log("\n");*/
+	
+	return 1;
+}	
+
+
 void* connthread(void* arg) {
+	enum Proto proto;
+	struct sockaddr_in addr;
 	int ssock = 0;
-	int csock = (int)arg;
+	int csock = (long)arg;
 	char* buffer;
 	int rc;
 	char* tok;
 	char* host = NULL;
-	char* portstr;
-	short port;
 	fd_set fds;
 	fd_set rfds;
 	
@@ -168,7 +514,7 @@ void* connthread(void* arg) {
 	}
 
 	buffer[rc] = 0;
-	tok = strtok(buffer, "\r\n");
+	strtok(buffer, "\r\n");
 	/* First token should be "GET /foo HTTP/1.1" so we can skip that safely. */
 	while ((tok = strtok(NULL, "\r\n"))) {
 		if (!strncasecmp(tok, "Host: ", 6)) {
@@ -181,34 +527,36 @@ void* connthread(void* arg) {
 		warn("[%d] Client did not provide Host: header.\n", csock);
 		goto end;
 	}
-
+	
 
 
 	/* Establish SOCKS connection. */
+	findserver(&proto, &addr, host);
+	
 	ssock = socket(AF_INET, SOCK_STREAM, 0);
-	rc = connect(ssock, (struct sockaddr*)&saddr, sizeof(saddr));
-	if (rc < 0) {
-		warn("[%d] Could not connect to server: %m\n", csock);
-		goto end;
-	}
+
+	switch (proto) {
+	case DIRECT:
+		if (!directconnect(csock, ssock, host, 80)) goto end;
+		break;
+		
+	case SOCKS4:
+		rc = connect(ssock, (struct sockaddr*)&addr, sizeof(addr));
+		if (rc) { warn("[%d] Could not connect to server: %m\n", csock); return 0; }
+		if (!socks4connect(csock, ssock, host, 80)) goto end;
+		break;
 	
-	log("[%d] Establishing proxy connection to %s.\n", csock, host);
-	memcpy(buffer, socks4a, sizeof(socks4a));
+	case SOCKS4A:
+		rc = connect(ssock, (struct sockaddr*)&addr, sizeof(addr));
+		if (rc) { warn("[%d] Could not connect to server: %m\n", csock); return 0; }
+		if (!socks4aconnect(csock, ssock, host, 80)) goto end;
+		break;
 	
-	host = strtok(host, ":");
-	portstr = strtok(NULL, "\r\n");
-	if (portstr != NULL) {
-		port = htons(atoi(portstr));
-		memcpy(buffer + 2, &port, 2);
-	}
-	
-	strcpy(buffer + sizeof(socks4a), host);
-	write(ssock, buffer, sizeof(socks4a) + strlen(host) + 1);
-	
-	read(ssock, buffer, 8);
-	if (buffer[1] != 0x5a) {
-		warn("[%d] SOCKS proxy rejected request.\n", csock);
-		goto end;
+	case SOCKS5:
+		rc = connect(ssock, (struct sockaddr*)&addr, sizeof(addr));
+		if (rc) { warn("[%d] Could not connect to server: %m\n", csock); return 0; }
+		if (!socks5connect(csock, ssock, host, 80)) goto end;
+		break;
 	}
 	
 	
@@ -263,12 +611,13 @@ void* connthread(void* arg) {
 }
 
 
+
 void sighandle(int sig) {
 	exitflag++;
 }
 
 
-int writeall(int fd, char* buffer, int size) {
+int writeall(int fd, const char* buffer, int size) {
 	int pos = 0;
 	int rc;
 	do {

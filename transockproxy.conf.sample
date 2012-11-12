@@ -1,0 +1,11 @@
+listen 8888
+
+ssl 8889
+sslcert cert.pem
+sslkey key.pem
+
+map *.example.com socks4a://127.0.0.1:9050
+map example.com socks4a://127.0.0.1:9050
+
+#default socks5://10.0.0.1:1080
+default direct
