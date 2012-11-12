@@ -11,11 +11,6 @@
     You should have received a copy of the GNU General Public License
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
     */
-    
-/* 
- *  To compile:
- *  gcc -O2 -o transockproxy transockproxy.c -lpthread
- */
 
 #include "transockproxy.h"
 
@@ -235,6 +230,7 @@ void readconfig(struct sockaddr_in* laddr, struct sockaddr_in* ssladdr) {
 			proto = strtok(NULL, ":\r\n");
 			if (!strcmp(proto, "direct")) {
 				map->proto = DIRECT;
+				printf("Mapping pattern %s to direct\n", map->pattern);
 				continue;
 			} else if (!strcmp(proto, "socks4")) {
 				map->proto = SOCKS4;
@@ -486,146 +482,8 @@ int socks5connect(int csock, int ssock, char* host, unsigned short defport) {
 	return 1;
 }	
 
-
-void* connthread(void* arg) {
-	enum Proto proto;
-	struct sockaddr_in addr;
-	int ssock = 0;
-	int csock = (long)arg;
-	char* buffer;
-	int rc;
-	char* tok;
-	char* host = NULL;
-	fd_set fds;
-	fd_set rfds;
-	
-	running++;
-	buffer = (char*)malloc(BUFFERSIZE);
-
-	/* Find connection info from client. This *should* all fit in the first packet. */
-	rc = recv(csock, buffer, BUFFERSIZE, MSG_PEEK);
-	if (rc == 0) {
-		warn("[%d] Client closed connection before sending headers.\n", csock);
-		goto end;
-	}
-	if (rc < 0) {
-		warn("[%d] Error reading request headers: %m\n", csock);
-		goto end;
-	}
-
-	buffer[rc] = 0;
-	strtok(buffer, "\r\n");
-	/* First token should be "GET /foo HTTP/1.1" so we can skip that safely. */
-	while ((tok = strtok(NULL, "\r\n"))) {
-		if (!strncasecmp(tok, "Host: ", 6)) {
-			host = strdup(tok + 6);
-			break;
-		}
-	}
-	
-	if (host == NULL) {
-		warn("[%d] Client did not provide Host: header.\n", csock);
-		goto end;
-	}
-	
-
-
-	/* Establish SOCKS connection. */
-	findserver(&proto, &addr, host);
-	
-	ssock = socket(AF_INET, SOCK_STREAM, 0);
-
-	switch (proto) {
-	case DIRECT:
-		if (!directconnect(csock, ssock, host, 80)) goto end;
-		break;
-		
-	case SOCKS4:
-		rc = connect(ssock, (struct sockaddr*)&addr, sizeof(addr));
-		if (rc) { warn("[%d] Could not connect to server: %m\n", csock); return 0; }
-		if (!socks4connect(csock, ssock, host, 80)) goto end;
-		break;
-	
-	case SOCKS4A:
-		rc = connect(ssock, (struct sockaddr*)&addr, sizeof(addr));
-		if (rc) { warn("[%d] Could not connect to server: %m\n", csock); return 0; }
-		if (!socks4aconnect(csock, ssock, host, 80)) goto end;
-		break;
-	
-	case SOCKS5:
-		rc = connect(ssock, (struct sockaddr*)&addr, sizeof(addr));
-		if (rc) { warn("[%d] Could not connect to server: %m\n", csock); return 0; }
-		if (!socks5connect(csock, ssock, host, 80)) goto end;
-		break;
-	}
-	
-	
-	/* Relay data. */
-	FD_ZERO(&fds);
-	FD_SET(csock, &fds);
-	FD_SET(ssock, &fds);
-	
-	do {
-		rfds = fds;
-		rc = select(FD_SETSIZE, &rfds, NULL, NULL, NULL);
-		if (rc < 0) break;
-		
-		if (FD_ISSET(csock, &rfds)) {
-			rc = read(csock, buffer, BUFFERSIZE);
-			if (rc == 0) break;
-			if (rc < 0) {
-				warn("[%d] Error reading from client: %m\n", csock);
-				break;
-			}
-		
-			rc = writeall(ssock, buffer, rc);
-			if (rc <= 0) {
-				warn("[%d] Error sending to server: %m\n", csock);
-				break;
-			}
-		}
-		if (FD_ISSET(ssock, &rfds)) {
-			rc = read(ssock, buffer, BUFFERSIZE);
-			if (rc == 0) break;
-			if (rc <= 0) {
-				warn("[%d] Error reading from server: %m\n", csock);
-				break;
-			}
-		
-			rc = writeall(csock, buffer, rc);
-			if (rc <= 0) {
-				warn("[%d] Error sending to client: %m\n", csock);
-				break;
-			}
-		}
-	} while (exitflag == 0);
-	
-	end:
-	if (csock > 0) close(csock);
-	if (ssock > 0) close(ssock);
-	if (host) free(host);
-	if (buffer) free(buffer);
-	running--;
-	log("[%d] Relay finished.\n", csock);
-	return NULL;
-}
-
-
-
 void sighandle(int sig) {
 	exitflag++;
-}
-
-
-int writeall(int fd, const char* buffer, int size) {
-	int pos = 0;
-	int rc;
-	do {
-		rc = write(fd, buffer + pos, size - pos);
-		if (rc <= 0) return rc;
-		pos += rc;
-	} while (pos < size);
-	return size;
 }
 
 
