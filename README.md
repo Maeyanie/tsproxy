@@ -16,15 +16,20 @@ You may find many other uses. :)
 - Supports HTTPS, as much as a transparent proxy can
 
 ### Usage ###
-- Compile with "make"
+- Compile with "make". The SSL binaries will fail to compile without GnuTLS installed, but the normal should be fine.
 - Edit the config file (sample is provided)
 - Run the version you want. The "s" suffix supports SSL, the "d" suffix daemonizes.
 - Redirect packets with something like: iptables -t nat -A PREROUTING -i eth0 -p tcp --dport 80 -j REDIRECT --to 8888
 - You can redirect packets from the OUTPUT chain too, but be careful not to cause an infinite loop
 - While running, a SIGINT (Ctrl-C) or SIGTERM (kill) once will start a clean shutdown. A second will exit immediately
 
+### Supported Platforms ###
+While tsproxy has only been tested on Linux x86 and x64, it should theoretically work on almost any POSIX system
+with a C compiler, including Cygwin. Platforms without iptables will have to find another way to redirect packets,
+though they could be redirected from another system. Some editing of the Makefile may be required. 
+
 ### HTTPS ###
-HTTPS is supported, but is a bit ugly. The protocol is designed to defeat man-in-the-middle attacks,
+HTTPS is supported via GnuTLS, but is a bit ugly. The protocol is designed to defeat man-in-the-middle attacks,
 and that is effectively what a transparent proxy does. 
 
 To use HTTPS, you will need a X.509 key and certificate with CA capability. Generating your own will work,
