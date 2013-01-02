@@ -37,6 +37,7 @@
 #define BUFFERSIZE 8192
 
 enum Proto {
+	INVALID,
 	DIRECT,
 	SOCKS4,
 	SOCKS4A,
@@ -45,8 +46,11 @@ enum Proto {
 
 struct Mapping {
 	const char* pattern;
-	struct sockaddr_in proxy;
 	enum Proto proto;
+	union {
+		struct sockaddr_in proxy;
+		char iface[sizeof(struct sockaddr_in)];
+	};
 };
 
 extern volatile sig_atomic_t exitflag;
@@ -70,9 +74,9 @@ void* connthread(void* arg);
 void* gnutlsthread(void* arg);
 int writeall(int fd, const char* buffer, int size);
 void sighandle(int sig);
-void findserver(enum Proto* proto, struct sockaddr_in* addr, const char* host);
+const struct Mapping* findserver(const char* host);
 
-int directconnect(int csock, int ssock, char* host, unsigned short defport);
+int directconnect(int csock, int ssock, char* host, unsigned short defport, const struct Mapping* map);
 int socks4connect(int csock, int ssock, char* host, unsigned short defport);
 int socks4aconnect(int csock, int ssock, char* host, unsigned short defport);
 int socks5connect(int csock, int ssock, char* host, unsigned short defport);

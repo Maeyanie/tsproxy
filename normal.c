@@ -26,7 +26,7 @@ int writeall(int fd, const char* buffer, int size) {
 }
 
 void* connthread(void* arg) {
-	enum Proto proto;
+	const struct Mapping* map;
 	struct sockaddr_in addr;
 	int ssock = 0;
 	int csock = (long)arg;
@@ -69,13 +69,16 @@ void* connthread(void* arg) {
 
 
 	/* Establish SOCKS connection. */
-	findserver(&proto, &addr, host);
+	map = findserver(host);
 	
 	ssock = socket(AF_INET, SOCK_STREAM, 0);
 
-	switch (proto) {
+	switch (map->proto) {
+	case INVALID:
+		goto end;
+	
 	case DIRECT:
-		if (!directconnect(csock, ssock, host, 80)) goto end;
+		if (!directconnect(csock, ssock, host, 80, map)) goto end;
 		break;
 		
 	case SOCKS4:

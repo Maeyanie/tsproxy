@@ -16,9 +16,7 @@
 
 volatile sig_atomic_t exitflag = 0;
 volatile sig_atomic_t running = 0;
-enum Proto defproto;
-struct sockaddr_in defaddr;
-char* directbind;
+struct Mapping defmap;
 struct Mapping** mappings;
 int mappingcount;
 
@@ -180,8 +178,7 @@ void readconfig(struct sockaddr_in* laddr, struct sockaddr_in* ssladdr) {
 	ssladdr->sin_addr.s_addr = htonl(INADDR_ANY);
 	ssladdr->sin_port = 0;
 
-	defaddr.sin_family = AF_INET;
-	defaddr.sin_port = 0;
+	defmap.proto = INVALID;
 	
 	FILE* fp = fopen("transockproxy.conf", "r");
 	if (!fp) { fprintf(stderr, "Error opening transockproxy.conf: %m\n"); exit(1); }	
@@ -197,21 +194,26 @@ void readconfig(struct sockaddr_in* laddr, struct sockaddr_in* ssladdr) {
 			printf("Listening on port %d.\n", port);
 		} else if (!strcmp(tok, "default")) {
 			proto = strtok(NULL, ":\r\n");
-			host = strtok(NULL, ":")+2;
+			host = strtok(NULL, ":\r\n")+2;
 			tok = strtok(NULL, "\r\n");
 			port = tok ? atoi(tok) : 0;
 			
 			if (!strcmp(proto, "direct")) {
-				defproto = DIRECT;
-				defaddr.sin_port = -1;
-				printf("Default server: direct\n");
+				defmap.proto = DIRECT;
+				if (host != (char*)2) {
+					strcpy(defmap.iface, host);
+					printf("Default server: direct via %s\n", host);
+				} else {
+					defmap.iface[0] = 0;
+					printf("Default server: direct\n");
+				}
 				continue;
 			} else if (!strcmp(proto, "socks4")) {
-				defproto = SOCKS4;
+				defmap.proto = SOCKS4;
 			} else if (!strcmp(proto, "socks4a")) {
-				defproto = SOCKS4A;
+				defmap.proto = SOCKS4A;
 			} else if (!strcmp(proto, "socks5")) {
-				defproto = SOCKS5;
+				defmap.proto = SOCKS5;
 			} else {
 				fprintf(stderr, "Unrecognized protocol '%s' (must be direct, socks4, socks4a, or socks5)\n", proto);
 				exit(1);
@@ -220,8 +222,9 @@ void readconfig(struct sockaddr_in* laddr, struct sockaddr_in* ssladdr) {
 			hostinfo = gethostbyname(host);
 			if (!hostinfo) { fprintf(stderr, "Unknown host %s\n", host); exit(1); }
 
-			defaddr.sin_addr = *(struct in_addr*)hostinfo->h_addr;
-			defaddr.sin_port = htons(port);
+			defmap.proxy.sin_family = AF_INET;
+			defmap.proxy.sin_addr = *(struct in_addr*)hostinfo->h_addr;
+			defmap.proxy.sin_port = htons(port);
 
 			printf("Default server: %s://%s:%hu\n", proto, host, port);
 		} else if (!strcmp(tok, "map")) {
@@ -229,9 +232,17 @@ void readconfig(struct sockaddr_in* laddr, struct sockaddr_in* ssladdr) {
 			map->pattern = strdup(strtok(NULL, " "));
 			
 			proto = strtok(NULL, ":\r\n");
+			host = strtok(NULL, ":\r\n")+2;
+
 			if (!strcmp(proto, "direct")) {
 				map->proto = DIRECT;
-				printf("Mapping pattern %s to direct\n", map->pattern);
+				if (host != (char*)2) {
+					strcpy(map->iface, host);
+					printf("Mapping pattern %s to direct via %s\n", map->pattern, map->iface);
+				} else {
+					map->iface[0] = 0;
+					printf("Mapping pattern %s to direct\n", map->pattern);
+				}
 				continue;
 			} else if (!strcmp(proto, "socks4")) {
 				map->proto = SOCKS4;
@@ -244,7 +255,6 @@ void readconfig(struct sockaddr_in* laddr, struct sockaddr_in* ssladdr) {
 				exit(1);
 			}
 
-			host = strtok(NULL, ":")+2;
 			hostinfo = gethostbyname(host);
 			if (!hostinfo) { fprintf(stderr, "Unknown host %s\n", host); exit(1); }
 			
@@ -275,10 +285,6 @@ void readconfig(struct sockaddr_in* laddr, struct sockaddr_in* ssladdr) {
 			keyfile = strdup(tok);
 		}
 		#endif
-		else if (!strcmp(tok, "directbind")) {
-		   tok = strtok(NULL, "\r\n");
-		   directbind = strdup(tok);
-		}
 	}
 	
 	fclose(fp);
@@ -300,28 +306,24 @@ void readconfig(struct sockaddr_in* laddr, struct sockaddr_in* ssladdr) {
 		fprintf(stderr, "Error loading config: Not listening on any ports. Needs a 'listen' and/or 'ssl' line.\n");
 		exit(1);
 	}
-	if (defaddr.sin_port == 0) {
+	if (defmap.proto == INVALID) {
 		fprintf(stderr, "Error loading config: No 'default' line found.\n");
 		exit(1);
 	}
 }
 
 
-void findserver(enum Proto* proto, struct sockaddr_in* addr, const char* host) {
+const struct Mapping* findserver(const char* host) {
 	int x;
 	for (x = 0; x < mappingcount; x++) {
 		if (!fnmatch(mappings[x]->pattern, host, 0)) {
-			*proto = mappings[x]->proto;
-			if (mappings[x]->proto != DIRECT)
-				memcpy(addr, &(mappings[x]->proxy), sizeof(struct sockaddr_in));
-			return;
+			return mappings[x];
 		}
 	}
-	*proto = defproto;
-	memcpy(addr, &defaddr, sizeof(struct sockaddr_in));
+	return &defmap;
 }
 
-int directconnect(int csock, int ssock, char* host, unsigned short defport) {
+int directconnect(int csock, int ssock, char* host, unsigned short defport, const struct Mapping* map) {
 	struct ifreq ifr;
 	struct sockaddr_in addr;
 	struct hostent* hostinfo;
@@ -330,9 +332,9 @@ int directconnect(int csock, int ssock, char* host, unsigned short defport) {
 
 	log("[%d] Establishing direct connection to %s.\n", csock, host);
 	
-	if (directbind) {
+	if (map->iface[0]) {
 		ifr.ifr_addr.sa_family = AF_INET;
-		strncpy(ifr.ifr_name, directbind, IFNAMSIZ-1);
+		strncpy(ifr.ifr_name, map->iface, IFNAMSIZ-1);
 
 		ioctl(ssock, SIOCGIFADDR, &ifr);
 		
