@@ -343,7 +343,8 @@ int directconnect(int csock, int ssock, char* host, unsigned short defport, cons
 		addr.sin_port = 0;
 		
 		rc = bind(ssock, (struct sockaddr*)&addr, sizeof(addr));
-		if (rc) { warn("[%d] Could not bind outgoing socket: %m\n", csock); }
+		if (rc) warn("[%d] Could not bind outgoing socket: %m\n", csock);
+		else log("[%d] Bound to %s\n", csock, inet_ntoa(addr.sin_addr));
 	}
 	
 	addr.sin_family = AF_INET;
