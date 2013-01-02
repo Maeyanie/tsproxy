@@ -18,6 +18,7 @@ volatile sig_atomic_t exitflag = 0;
 volatile sig_atomic_t running = 0;
 enum Proto defproto;
 struct sockaddr_in defaddr;
+char* directbind;
 struct Mapping** mappings;
 int mappingcount;
 
@@ -274,6 +275,10 @@ void readconfig(struct sockaddr_in* laddr, struct sockaddr_in* ssladdr) {
 			keyfile = strdup(tok);
 		}
 		#endif
+		else if (!strcmp(tok, "directbind")) {
+		   tok = strtok(NULL, "\r\n");
+		   directbind = strdup(tok);
+		}
 	}
 	
 	fclose(fp);
@@ -317,12 +322,27 @@ void findserver(enum Proto* proto, struct sockaddr_in* addr, const char* host) {
 }
 
 int directconnect(int csock, int ssock, char* host, unsigned short defport) {
+	struct ifreq ifr;
 	struct sockaddr_in addr;
 	struct hostent* hostinfo;
 	char* portstr;
 	int rc;
 
 	log("[%d] Establishing direct connection to %s.\n", csock, host);
+	
+	if (directbind) {
+		ifr.ifr_addr.sa_family = AF_INET;
+		strncpy(ifr.ifr_name, directbind, IFNAMSIZ-1);
+
+		ioctl(ssock, SIOCGIFADDR, &ifr);
+		
+		addr.sin_family = AF_INET;
+		addr.sin_addr.s_addr = ((struct sockaddr_in*)&ifr.ifr_addr)->sin_addr.s_addr;
+		addr.sin_port = 0;
+		
+		rc = bind(ssock, (struct sockaddr*)&addr, sizeof(addr));
+		if (rc) { warn("[%d] Could not bind outgoing socket: %m\n", csock); }
+	}
 	
 	addr.sin_family = AF_INET;
 
