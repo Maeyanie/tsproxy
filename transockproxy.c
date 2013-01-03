@@ -335,16 +335,24 @@ int directconnect(int csock, int ssock, char* host, unsigned short defport, cons
 	if (map->iface[0]) {
 		ifr.ifr_addr.sa_family = AF_INET;
 		strncpy(ifr.ifr_name, map->iface, IFNAMSIZ-1);
-
-		ioctl(ssock, SIOCGIFADDR, &ifr);
 		
-		addr.sin_family = AF_INET;
-		addr.sin_addr.s_addr = ((struct sockaddr_in*)&ifr.ifr_addr)->sin_addr.s_addr;
-		addr.sin_port = 0;
+		#ifdef SO_BINDTODEVICE
+		rc = setsockopt(sockfd, SOL_SOCKET, SO_BINDTODEVICE, &ifr, sizeof(ifr));
+		if (rc == 0) {
+			log("[%d] Bound to %s\n", csock, map->iface);
+		} else
+		#endif
+		{
+			ioctl(ssock, SIOCGIFADDR, &ifr);
 		
-		rc = bind(ssock, (struct sockaddr*)&addr, sizeof(addr));
-		if (rc) warn("[%d] Could not bind outgoing socket: %m\n", csock);
-		else log("[%d] Bound to %s\n", csock, inet_ntoa(addr.sin_addr));
+			addr.sin_family = AF_INET;
+			addr.sin_addr.s_addr = ((struct sockaddr_in*)&ifr.ifr_addr)->sin_addr.s_addr;
+			addr.sin_port = 0;
+		
+			rc = bind(ssock, (struct sockaddr*)&addr, sizeof(addr));
+			if (rc) warn("[%d] Could not bind outgoing socket: %m\n", csock);
+			else log("[%d] Bound to %s\n", csock, inet_ntoa(addr.sin_addr));
+		}
 	}
 	
 	addr.sin_family = AF_INET;
