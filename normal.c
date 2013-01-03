@@ -52,15 +52,22 @@ void* connthread(void* arg) {
 			goto end;
 		}
 		buffer[rc] = 0;
-		if (!strstr(buffer, "Host: ")) {
+		/* Technically it's case-insensitive, but these should cover almost all cases. */
+		if (!strstr(buffer, "Host: ") && !strstr(buffer, "host: ")) {
 			usleep(10000);
 			tries++;
-			if (tries > 1000) goto end;
+			if (tries > 1000) {
+				warn("[%d] Waiting for Host: header timed out.\n", csock);
+				goto end;
+			}
+			if (rc >= BUFFERSIZE-1) {
+				warn("[%d] Host: header not found within first %d bytes.\n", csock, rc);
+				goto end;
+			}
 			continue;
 		}
 	} while (0);
 
-	buffer[rc] = 0;
 	strtok(buffer, "\r\n");
 	/* First token should be "GET /foo HTTP/1.1" so we can skip that safely. */
 	while ((tok = strtok(NULL, "\r\n"))) {
