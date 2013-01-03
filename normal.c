@@ -36,20 +36,29 @@ void* connthread(void* arg) {
 	char* host = NULL;
 	fd_set fds;
 	fd_set rfds;
+	int tries = 0;
 	
 	running++;
 	buffer = (char*)malloc(BUFFERSIZE);
 
-	/* Find connection info from client. This *should* all fit in the first packet. */
-	rc = recv(csock, buffer, BUFFERSIZE, MSG_PEEK);
-	if (rc == 0) {
-		warn("[%d] Client closed connection before sending headers.\n", csock);
-		goto end;
-	}
-	if (rc < 0) {
-		warn("[%d] Error reading request headers: %m\n", csock);
-		goto end;
-	}
+	do {
+		rc = recv(csock, buffer, BUFFERSIZE-1, MSG_PEEK);
+		if (rc == 0) {
+			warn("[%d] Client closed connection before sending headers.\n", csock);
+			goto end;
+		}
+		if (rc < 0) {
+			warn("[%d] Error reading request headers: %m\n", csock);
+			goto end;
+		}
+		buffer[rc] = 0;
+		if (!strstr(buffer, "Host: ")) {
+			usleep(10000);
+			tries++;
+			if (tries > 1000) goto end;
+			continue;
+		}
+	} while (0);
 
 	buffer[rc] = 0;
 	strtok(buffer, "\r\n");
