@@ -337,7 +337,7 @@ int directconnect(int csock, int ssock, char* host, unsigned short defport, cons
 		strncpy(ifr.ifr_name, map->iface, IFNAMSIZ-1);
 		
 		#ifdef SO_BINDTODEVICE
-		rc = setsockopt(sockfd, SOL_SOCKET, SO_BINDTODEVICE, &ifr, sizeof(ifr));
+		rc = setsockopt(ssock, SOL_SOCKET, SO_BINDTODEVICE, &ifr, sizeof(ifr));
 		if (rc == 0) {
 			log("[%d] Bound to %s\n", csock, map->iface);
 		} else
