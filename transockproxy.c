@@ -323,11 +323,12 @@ const struct Mapping* findserver(const char* host) {
 	return &defmap;
 }
 
-int directconnect(int csock, int ssock, char* host, unsigned short defport, const struct Mapping* map) {
+int directconnect(int csock, int ssock, char* host, const char* defport, const struct Mapping* map) {
 	struct ifreq ifr;
 	struct sockaddr_in addr;
-	struct hostent* hostinfo;
-	char* portstr;
+	struct addrinfo* hostinfo;
+	struct addrinfo* hostcur;
+	const char* port;
 	int rc;
 
 	log("[%d] Establishing direct connection to %s.\n", csock, host);
@@ -355,27 +356,29 @@ int directconnect(int csock, int ssock, char* host, unsigned short defport, cons
 		}
 	}
 	
-	addr.sin_family = AF_INET;
-
 	host = strtok(host, ":");
-	hostinfo = gethostbyname(host);
-	if (hostinfo == NULL) {
+	port = strtok(NULL, "\r\n");
+	if (port == NULL || !port[0]) port = defport;
+	
+	rc = getaddrinfo(host, port, NULL, &hostinfo);
+	 
+	if (rc) {
 		warn("[%d] Could not resolve host %s.\n", csock, host);
 		return 0;
 	}
-	addr.sin_addr = *(struct in_addr*)hostinfo->h_addr;
-	
-	portstr = strtok(NULL, "\r\n");
-	if (portstr != NULL) {
-		addr.sin_port = htons(atoi(portstr));
-	} else {
-		addr.sin_port = htons(defport);
+
+	for (hostcur = hostinfo; hostcur; hostcur = hostcur->ai_next) {
+		rc = connect(ssock, hostcur->ai_addr, hostcur->ai_addrlen);
+		if (rc == 0) {
+			freeaddrinfo(hostinfo);
+			return 1;
+		}
+		warn("[%d] Could not connect to server: %m\n", csock);
 	}
 	
-	rc = connect(ssock, (struct sockaddr*)&addr, sizeof(addr));
-	if (rc) { warn("[%d] Could not connect to server: %m\n", csock); return 0; }
-	
-	return 1;
+	freeaddrinfo(hostinfo);
+	warn("[%d] No server reached.\n", csock);
+	return 0;
 }
 
 int socks4connect(int csock, int ssock, char* host, unsigned short defport) {

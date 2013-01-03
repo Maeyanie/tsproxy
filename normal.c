@@ -78,7 +78,7 @@ void* connthread(void* arg) {
 		goto end;
 	
 	case DIRECT:
-		if (!directconnect(csock, ssock, host, 80, map)) goto end;
+		if (!directconnect(csock, ssock, host, "80", map)) goto end;
 		break;
 		
 	case SOCKS4:

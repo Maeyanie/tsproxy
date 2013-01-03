@@ -76,7 +76,7 @@ int writeall(int fd, const char* buffer, int size);
 void sighandle(int sig);
 const struct Mapping* findserver(const char* host);
 
-int directconnect(int csock, int ssock, char* host, unsigned short defport, const struct Mapping* map);
+int directconnect(int csock, int ssock, char* host, const char* defport, const struct Mapping* map);
 int socks4connect(int csock, int ssock, char* host, unsigned short defport);
 int socks4aconnect(int csock, int ssock, char* host, unsigned short defport);
 int socks5connect(int csock, int ssock, char* host, unsigned short defport);

@@ -259,7 +259,7 @@ void* gnutlsthread(void* arg) {
 		goto end;
 	
 	case DIRECT:
-		if (!directconnect(csock, ssock, host, 443, map)) goto end;
+		if (!directconnect(csock, ssock, host, "443", map)) goto end;
 		break;
 
 	case SOCKS4:
