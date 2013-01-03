@@ -41,32 +41,31 @@ void* connthread(void* arg) {
 	running++;
 	buffer = (char*)malloc(BUFFERSIZE);
 
-	do {
-		rc = recv(csock, buffer, BUFFERSIZE-1, MSG_PEEK);
-		if (rc == 0) {
-			warn("[%d] Client closed connection before sending headers.\n", csock);
+	tryagain:
+	rc = recv(csock, buffer, BUFFERSIZE-1, MSG_PEEK);
+	if (rc == 0) {
+		warn("[%d] Client closed connection before sending headers.\n", csock);
+		goto end;
+	}
+	if (rc < 0) {
+		warn("[%d] Error reading request headers: %m\n", csock);
+		goto end;
+	}
+	buffer[rc] = 0;
+	/* Technically it's case-insensitive, but these should cover almost all cases. */
+	if (!strstr(buffer, "Host: ") && !strstr(buffer, "host: ")) {
+		usleep(10000);
+		tries++;
+		if (tries > 1000) {
+			warn("[%d] Waiting for Host: header timed out.\n", csock);
 			goto end;
 		}
-		if (rc < 0) {
-			warn("[%d] Error reading request headers: %m\n", csock);
+		if (rc >= BUFFERSIZE-1) {
+			warn("[%d] Host: header not found within first %d bytes.\n", csock, rc);
 			goto end;
 		}
-		buffer[rc] = 0;
-		/* Technically it's case-insensitive, but these should cover almost all cases. */
-		if (!strstr(buffer, "Host: ") && !strstr(buffer, "host: ")) {
-			usleep(10000);
-			tries++;
-			if (tries > 1000) {
-				warn("[%d] Waiting for Host: header timed out.\n", csock);
-				goto end;
-			}
-			if (rc >= BUFFERSIZE-1) {
-				warn("[%d] Host: header not found within first %d bytes.\n", csock, rc);
-				goto end;
-			}
-			continue;
-		}
-	} while (0);
+		goto tryagain;
+	}
 
 	strtok(buffer, "\r\n");
 	/* First token should be "GET /foo HTTP/1.1" so we can skip that safely. */
