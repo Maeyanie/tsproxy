@@ -382,7 +382,7 @@ int directconnect(int csock, int ssock, char* host, const char* defport, const s
 }
 
 int socks4connect(int csock, int ssock, char* host, unsigned short defport) {
-	char buffer[1024];
+	unsigned char buffer[1024];
 	struct hostent* hostinfo;
 	char* portstr;
 	short port;
@@ -417,7 +417,7 @@ int socks4connect(int csock, int ssock, char* host, unsigned short defport) {
 }
 
 int socks4aconnect(int csock, int ssock, char* host, unsigned short defport) {
-	char buffer[1024];
+	unsigned char buffer[1024];
 	char* portstr;
 	short port;
 
@@ -445,7 +445,7 @@ int socks4aconnect(int csock, int ssock, char* host, unsigned short defport) {
 }
 
 int socks5connect(int csock, int ssock, char* host, unsigned short defport) {
-	char buffer[1024];
+	unsigned char buffer[1024];
 	char* portstr;
 	short port;
 	int rc;
